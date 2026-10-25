@@ -2,6 +2,7 @@ package oauth
 
 import (
 	"context"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -30,6 +31,9 @@ type TokenRequest struct {
 	TargetNFInstanceID   string
 	NRFURI               string
 	Scope                string
+	// HTTPClient optionally supplies the transport (for example, mTLS). Reuse the
+	// client without mutating it; a different pointer uses separate client/token caches.
+	HTTPClient *http.Client
 }
 
 func (request TokenRequest) validate() error {
@@ -65,9 +69,16 @@ type tokenCacheKey struct {
 	TargetNFInstanceID   string
 	NRFURI               string
 	Scope                string
+	HTTPClient           *http.Client
 }
 
 var tokenMap sync.Map
+
+type clientCacheKey struct {
+	NRFURI     string
+	HTTPClient *http.Client
+}
+
 var clientMap sync.Map
 
 func GetTokenCtx(
@@ -90,13 +101,18 @@ func sendAccTokenReq(
 	cacheKey := tokenCacheKey(request)
 	var client *AccTok.APIClient
 
-	if val, ok := clientMap.Load(request.NRFURI); ok {
+	clientKey := clientCacheKey{request.NRFURI, request.HTTPClient}
+	if val, ok := clientMap.Load(clientKey); ok {
 		client = val.(*AccTok.APIClient)
 	} else {
 		configuration := AccTok.NewConfiguration()
 		configuration.SetBasePath(request.NRFURI)
+		if request.HTTPClient != nil {
+			configuration.SetHTTPClient(request.HTTPClient)
+		}
 		client = AccTok.NewAPIClient(configuration)
-		clientMap.Store(request.NRFURI, client)
+		actual, _ := clientMap.LoadOrStore(clientKey, client)
+		client = actual.(*AccTok.APIClient)
 	}
 
 	// Check if we have a valid cached token
